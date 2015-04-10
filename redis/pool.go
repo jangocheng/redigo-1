@@ -20,12 +20,13 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/garyburd/redigo/internal"
+	"github.com/xiaoenai/redigo/internal"
 )
 
 var nowFunc = time.Now // for testing
@@ -128,6 +129,9 @@ type Pool struct {
 
 	// Stack of idleConn with most recently used at the front.
 	idle list.List
+
+	logger    Logger
+	logPrefix string
 }
 
 type idleConn struct {
@@ -139,6 +143,25 @@ type idleConn struct {
 // initialize the Pool fields directly as shown in example.
 func NewPool(newFn func() (Conn, error), maxIdle int) *Pool {
 	return &Pool{Dial: newFn, MaxIdle: maxIdle}
+}
+
+type Logger interface {
+	Printf(format string, v ...interface{})
+}
+
+func (p *Pool) trace(started time.Time, format string, args ...interface{}) {
+	if p.logger != nil {
+		s := format + " "
+		for _, v := range args {
+			s += fmt.Sprint(v) + " "
+		}
+		p.logger.Printf("%s%s(%v)", p.logPrefix, s, (time.Now().Sub(started)))
+	}
+}
+
+func (p *Pool) TraceOn(prefix string, logger Logger) {
+	p.logPrefix = prefix
+	p.logger = logger
 }
 
 // Get gets a connection. The application must close the returned connection.
@@ -360,12 +383,20 @@ func (pc *pooledConnection) Err() error {
 }
 
 func (pc *pooledConnection) Do(commandName string, args ...interface{}) (reply interface{}, err error) {
+	if pc.p.logger != nil {
+		now := time.Now()
+		defer pc.p.trace(now, commandName, args...)
+	}
 	ci := internal.LookupCommandInfo(commandName)
 	pc.state = (pc.state | ci.Set) &^ ci.Clear
 	return pc.c.Do(commandName, args...)
 }
 
 func (pc *pooledConnection) Send(commandName string, args ...interface{}) error {
+	if pc.p.logger != nil {
+		now := time.Now()
+		defer pc.p.trace(now, "%s", commandName[1:len(commandName)-1])
+	}
 	ci := internal.LookupCommandInfo(commandName)
 	pc.state = (pc.state | ci.Set) &^ ci.Clear
 	return pc.c.Send(commandName, args...)
